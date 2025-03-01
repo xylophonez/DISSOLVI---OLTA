@@ -1,0 +1,15 @@
+html, body {
+  margin: center;
+  padding: 0;
+  background: rgb(28,26,26);
+   position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%); /* adjusts position relative to its own size */
+
+
+}
+canvas {
+  display: block;
+  
+}
