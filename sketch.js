@@ -10,7 +10,7 @@ let orient = 50;
 let par1 = 0.0;
 let oldWidth, oldHeight;
 
-const aspectRatio = 9/16;
+const aspectRatio = 16/9;
 let canvas;
 let M;
 
