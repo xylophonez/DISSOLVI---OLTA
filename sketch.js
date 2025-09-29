@@ -30,7 +30,39 @@ const publish = debounce(() => {
   // console.log("olta.publish -> page/0 motionControl");
 }, 300);
 
-// Apply AO/Olta state back into the sketch when it changes (collab-ready)
+// put near your `publish` / Olta code
+let _lastSent = null;
+function snapshotControls() {
+  return {
+    captureScale: Math.round(captureScale * 100),
+    threshold: Math.round(threshold),
+    strokeWeightVal: Math.round(strokeWeightVal),
+    pd: Math.round(pd),
+    orient: Math.round(orient),
+    par1: Math.round(par1 * 100),
+  };
+}
+function shallowEqual(a, b) {
+  if (!a || !b) return false;
+  for (const k in a) if (a[k] !== b[k]) return false;
+  for (const k in b) if (a[k] !== b[k]) return false;
+  return true;
+}
+const publishIfChanged = (() => {
+  const doPublish = () => {
+    const next = snapshotControls();
+    if (!_lastSent || !shallowEqual(_lastSent, next)) {
+      _lastSent = next;
+      olta.update("page", { id: 0, motionControl: next });
+      // console.log("olta.update(page/0) – changed");
+    }
+  };
+  // debounce for politeness
+  let t;
+  return () => { clearTimeout(t); t = setTimeout(doPublish, 200); };
+})();
+
+// call it after you apply incoming state in olta.onUpdate(...)
 olta.onUpdate(({ projectState }) => {
   const coll = projectState?.collections?.page?.["0"];
   const mc = coll?.motionControl || {};
@@ -57,6 +89,7 @@ olta.onUpdate(({ projectState }) => {
 
   // If video sampling depends on captureScale, propagate size
   updateVideoSize();
+  publishIfChanged(); // echo back only if local snapshot differs (no ping-pong)
 });
 
 // --- YOUR SKETCH ------------------------------------------------------------
@@ -99,7 +132,7 @@ function setup() {
   shaderEffect = pg.createShader(vs, fs);
 
   // Publish initial controls so AO has a baseline doc
-  publish();
+  publishIfChanged(); // call this at the end of setup()
 }
 
 function draw() {
@@ -169,7 +202,7 @@ function windowResized() {
   prevFrame = createImage(video.width, video.height);
 
   // Persist new controls (if captureScale affects anything)
-  publish();
+  publishIfChanged();
 }
 
 function calculateCanvasSize() {
@@ -329,28 +362,28 @@ function getPixelDensity() {
 // OPTIONAL: quick keyboard controls to test writes
 function keyPressed() {
   // threshold up/down
-  if (key === "Q") { threshold = Math.min(255, threshold + 1); publish(); }
-  if (key === "A") { threshold = Math.max(0, threshold - 1); publish(); }
+  if (key === "Q") { threshold = Math.min(255, threshold + 1); publishIfChanged(); }
+  if (key === "A") { threshold = Math.max(0, threshold - 1); publishIfChanged(); }
 
   // captureScale up/down (0.01..1.00)
-  if (key === "W") { captureScale = Math.min(1.0, captureScale + 0.01); updateVideoSize(); publish(); }
-  if (key === "S") { captureScale = Math.max(0.01, captureScale - 0.01); updateVideoSize(); publish(); }
+  if (key === "W") { captureScale = Math.min(1.0, captureScale + 0.01); updateVideoSize(); publishIfChanged(); }
+  if (key === "S") { captureScale = Math.max(0.01, captureScale - 0.01); updateVideoSize(); publishIfChanged(); }
 
   // strokeWeight up/down
-  if (key === "E") { strokeWeightVal = Math.min(200, strokeWeightVal + 1); publish(); }
-  if (key === "D") { strokeWeightVal = Math.max(1, strokeWeightVal - 1); publish(); }
+  if (key === "E") { strokeWeightVal = Math.min(200, strokeWeightVal + 1); publishIfChanged(); }
+  if (key === "D") { strokeWeightVal = Math.max(1, strokeWeightVal - 1); publishIfChanged(); }
 
   // par1 0..10.00
-  if (key === "R") { par1 = Math.min(10.0, par1 + 0.01); publish(); }
-  if (key === "F") { par1 = Math.max(0.0,  par1 - 0.01); publish(); }
+  if (key === "R") { par1 = Math.min(10.0, par1 + 0.01); publishIfChanged(); }
+  if (key === "F") { par1 = Math.max(0.0,  par1 - 0.01); publishIfChanged(); }
 
   // orient 0..100
-  if (key === "T") { orient = Math.min(100, orient + 1); publish(); }
-  if (key === "G") { orient = Math.max(0, orient - 1); publish(); }
+  if (key === "T") { orient = Math.min(100, orient + 1); publishIfChanged(); }
+  if (key === "G") { orient = Math.max(0, orient - 1); publishIfChanged(); }
 
   // pd 1..5 (integer)
-  if (key === "Y") { pd = Math.min(5, Math.round(pd + 1)); publish(); }
-  if (key === "H") { pd = Math.max(1, Math.round(pd - 1)); publish(); }
+  if (key === "Y") { pd = Math.min(5, Math.round(pd + 1)); publishIfChanged(); }
+  if (key === "H") { pd = Math.max(1, Math.round(pd - 1)); publishIfChanged(); }
 }
 
 // Keep your minimal windowResized (we also publish above)
@@ -362,3 +395,6 @@ function windowResized() {
   M = canvas / 1000;
   resizeCanvas(canvas * aspectRatio, canvas);
 }
+
+// OPTIONAL: very light heartbeat – catch any parameter changes you may make programmatically
+setInterval(publishIfChanged, 2000);  // every 2s, only publishes if different
