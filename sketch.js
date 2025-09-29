@@ -1,16 +1,78 @@
+// --- OLTA INTEGRATION -------------------------------------------------------
+const olta = Olta();
+
+// Debounce helper for polite S3/AO writes
+function debounce(fn, wait) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
+}
+
+// Scale+publish our control doc to AO via Olta (page/0)
+const publish = debounce(() => {
+  // NOTE: your schema uses bigint scalars. We send ints; olta.module will turn them into "n" strings.
+  // captureScale: store as 1..100  (0.01..1.00 UI)   -> multiply by 100
+  // threshold:    0..255                             -> as-is
+  // strokeWeight: 1..200                             -> as-is
+  // pd:           1..5                               -> as-is
+  // orient:       0..100                             -> as-is
+  // par1:         0..1000 (represents 0..10.00)     -> multiply by 100
+  olta.update("page", {
+    id: 0,
+    motionControl: {
+      captureScale: Math.round(captureScale * 100),
+      threshold: Math.round(threshold),
+      strokeWeightVal: Math.round(strokeWeightVal),
+      pd: Math.round(pd),
+      orient: Math.round(orient),
+      par1: Math.round(par1 * 100),
+    },
+  });
+  // console.log("olta.publish -> page/0 motionControl");
+}, 300);
+
+// Apply AO/Olta state back into the sketch when it changes (collab-ready)
+olta.onUpdate(({ projectState }) => {
+  const coll = projectState?.collections?.page?.["0"];
+  const mc = coll?.motionControl || {};
+
+  // helper: parse "123n" -> 123 number
+  const num = (v) =>
+    typeof v === "string" && v.endsWith("n") ? Number(v.slice(0, -1)) : (typeof v === "number" ? v : undefined);
+
+  // Use incoming values if present; otherwise keep current ones
+  const nextCaptureScale = num(mc.captureScale);
+  const nextThreshold = num(mc.threshold);
+  const nextStroke = num(mc.strokeWeightVal);
+  const nextPd = num(mc.pd);
+  const nextOrient = num(mc.orient);
+  const nextPar1 = num(mc.par1);
+
+  // Remember: captureScale is stored 1..100 (UI 0.01..1.00), par1 is stored *100
+  if (Number.isFinite(nextCaptureScale)) captureScale = nextCaptureScale / 100;
+  if (Number.isFinite(nextThreshold)) threshold = nextThreshold;
+  if (Number.isFinite(nextStroke)) strokeWeightVal = nextStroke;
+  if (Number.isFinite(nextPd)) pd = nextPd;
+  if (Number.isFinite(nextOrient)) orient = nextOrient;
+  if (Number.isFinite(nextPar1)) par1 = nextPar1 / 100;
+
+  // If video sampling depends on captureScale, propagate size
+  updateVideoSize();
+});
+
+// --- YOUR SKETCH ------------------------------------------------------------
 let video;
 let prevFrame;
 let trail = [];
 let shaderEffect;
-let captureScale = 0.2;
-let threshold = 50;
+let captureScale = 0.2;   // UI 0.01..1.00 -> stored as 1..100
+let threshold = 50;       // 0..255
 let strokeWeightVal = 100;
-let pd = 0.5;
-let orient = 50;
-let par1 = 0.0;
+let pd = 1;               // match schema (1..5). You were starting at 0.5; schema min is 1.
+let orient = 50;          // 0..100
+let par1 = 0.0;           // UI 0..10.00 -> stored as 0..1000
 let oldWidth, oldHeight;
 
-const aspectRatio = 5/4;
+const aspectRatio = 5 / 4;
 let canvas;
 let M;
 
@@ -20,7 +82,7 @@ let trailBuffer; // 2D buffer for drawing trails
 function setup() {
   canvas = calculateCanvasSize();
   M = canvas / 1000;
-  
+
   createCanvas(canvas * aspectRatio, canvas);
   pd = getPixelDensity();
   pixelDensity(1);
@@ -35,10 +97,14 @@ function setup() {
   trailBuffer = createGraphics(width, height);
   pg = createGraphics(width, height, WEBGL);
   shaderEffect = pg.createShader(vs, fs);
+
+  // Publish initial controls so AO has a baseline doc
+  publish();
 }
 
 function draw() {
   background(0);
+
   let trackedPos = trackMotion();
 
   // Update trails
@@ -46,15 +112,15 @@ function draw() {
     trail.push({
       pos: trackedPos,
       color: color(
-        map(trackedPos.x, 0, width/M, 0, 255),
-        map(trackedPos.y, 0, height/M, 255, 0),
+        map(trackedPos.x, 0, width / M, 0, 255),
+        map(trackedPos.y, 0, height / M, 255, 0),
         200,
         150
       ),
-      weight: strokeWeightVal
+      weight: strokeWeightVal,
     });
   }
-  if (trail.length > 30*M) trail.shift();
+  if (trail.length > 30 * M) trail.shift();
 
   // Draw trails into buffer
   drawTrails();
@@ -70,37 +136,40 @@ function drawTrails() {
   trailBuffer.clear();
   trailBuffer.noFill();
   for (let i = 1; i < trail.length; i++) {
-    const prev = trail[i-1];
+    const prev = trail[i - 1];
     const current = trail[i];
     trailBuffer.stroke(current.color);
     trailBuffer.strokeWeight(current.weight * M);
-    trailBuffer.line(prev.pos.x*M, prev.pos.y*M, current.pos.x*M, current.pos.y*M);
+    trailBuffer.line(prev.pos.x * M, prev.pos.y * M, current.pos.x * M, current.pos.y * M);
   }
 }
 
 function applyShaderEffect() {
   pg.shader(shaderEffect);
-  shaderEffect.setUniform('texture', trailBuffer);
-  shaderEffect.setUniform('iResolution', [width, height]);
-  shaderEffect.setUniform('iTime', millis() / 1000.0);
-  shaderEffect.setUniform('pd', pd);
-  shaderEffect.setUniform('orient', orient);
-  shaderEffect.setUniform('par1', par1);
-  pg.rect(-width/2, -height/2, width, height);
+  shaderEffect.setUniform("texture", trailBuffer);
+  shaderEffect.setUniform("iResolution", [width, height]);
+  shaderEffect.setUniform("iTime", millis() / 1000.0);
+  shaderEffect.setUniform("pd", pd);
+  shaderEffect.setUniform("orient", orient);
+  shaderEffect.setUniform("par1", par1);
+  pg.rect(-width / 2, -height / 2, width, height);
 }
 
 function windowResized() {
   canvas = calculateCanvasSize();
   M = canvas / 1000;
   resizeCanvas(canvas * aspectRatio, canvas);
-  
+
   // Resize buffers
   if (trailBuffer) trailBuffer.resizeCanvas(width, height);
   if (pg) pg.resizeCanvas(width, height);
-  
+
   // Update video processing
   updateVideoSize();
   prevFrame = createImage(video.width, video.height);
+
+  // Persist new controls (if captureScale affects anything)
+  publish();
 }
 
 function calculateCanvasSize() {
@@ -110,10 +179,12 @@ function calculateCanvasSize() {
 }
 
 function updateVideoSize() {
-  video.size(width * captureScale / M, height * captureScale / M);
+  // guard against zero/NaN
+  const cs = Math.max(0.01, Math.min(1, Number(captureScale) || 0.2));
+  video.size((width * cs) / M, (height * cs) / M);
 }
 
-// Vertex shader 
+// Vertex shader
 const vs = `precision mediump float;
 attribute vec3 aPosition;
 uniform mat4 uModelViewMatrix;
@@ -122,10 +193,9 @@ uniform mat4 uProjectionMatrix;
 void main() {
   vec4 positionVec4 = vec4(aPosition, 1.0);
   gl_Position = uProjectionMatrix * uModelViewMatrix * positionVec4;
-
 }`;
 
-// Fragment shader 
+// Fragment shader
 const fs = `precision mediump float;
 uniform vec2 iResolution;
 uniform float iTime;
@@ -200,84 +270,29 @@ void main() {
   gl_FragColor = col;
 }`;
 
-// function windowResized() {
-//   randomSeed(seed)
-//   noiseSeed(seed)
-
-//   canvas =
-//     window.innerWidth / window.innerHeight < aspectRatio
-//       ? window.innerWidth / aspectRatio
-//       : window.innerHeight
-//   M = canvas/1000
-//   resizeCanvas(canvas * aspectRatio, canvas)
-
-// }
-
-// function keyPressed() {
-//   // Save a 4K PNG when pressing the S key
-//   if (keyCode == 83) {
-
-//     print("Saving image in 2K...")
-//     canvas = 2000
-//     M = canvas / 1000
-
-//     resizeCanvas(canvas * aspectRatio, canvas)
-//     save("Memento-2K")
-//     canvas =
-//       window.innerWidth / window.innerHeight < aspectRatio
-//         ? window.innerWidth / aspectRatio
-//         : window.innerHeight
-//     M = canvas / 1000
-//     resizeCanvas(canvas * aspectRatio, canvas)
-
-//   }
-//   if (keyCode == 85) {
-//     print("Saving image in 4K...")
-//     canvas = 4000
-//     M = canvas / 1000
-//     resizeCanvas(canvas * aspectRatio, canvas)
-//     save("Memento-4K")
-//     canvas =
-//       window.innerWidth / window.innerHeight < aspectRatio
-//         ? window.innerWidth / aspectRatio
-//         : window.innerHeight
-//     M = canvas / 1000
-//     resizeCanvas(canvas * aspectRatio, canvas)
-//   }
-//   if (keyCode == 80) {
-//     print("Saving image in 8K...")
-//     canvas = 6000
-//     M = canvas / 1000
-//     resizeCanvas(canvas * aspectRatio, canvas)
-//     save("Memento-8K")
-//     canvas =
-//       window.innerWidth / window.innerHeight < aspectRatio
-//         ? window.innerWidth / aspectRatio
-//         : window.innerHeight
-//     M = canvas / 1000
-//     resizeCanvas(canvas * aspectRatio, canvas)
-//   }
-// }
-
+// Motion tracking
 function trackMotion() {
+  // Guard: capture may not be ready yet
+  if (!video || !video.loadedmetadata) return null;
+
   video.loadPixels();
   prevFrame.loadPixels();
-  
+
   let sumX = 0, sumY = 0, count = 0;
-  
+
   for (let y = 0; y < video.height; y++) {
     for (let x = 0; x < video.width; x++) {
-      let index = (x + y * video.width) * 4;
-      let r = video.pixels[index];
-      let g = video.pixels[index + 1];
-      let b = video.pixels[index + 2];
-      
-      let prevR = prevFrame.pixels[index];
-      let prevG = prevFrame.pixels[index + 1];
-      let prevB = prevFrame.pixels[index + 2];
-      
-      let diff = dist(r, g, b, prevR, prevG, prevB);
-      
+      const index = (x + y * video.width) * 4;
+      const r = video.pixels[index];
+      const g = video.pixels[index + 1];
+      const b = video.pixels[index + 2];
+
+      const prevR = prevFrame.pixels[index];
+      const prevG = prevFrame.pixels[index + 1];
+      const prevB = prevFrame.pixels[index + 2];
+
+      const diff = dist(r, g, b, prevR, prevG, prevB);
+
       if (diff > threshold) {
         sumX += x;
         sumY += y;
@@ -285,50 +300,61 @@ function trackMotion() {
       }
     }
   }
-  
+
   prevFrame.copy(video, 0, 0, video.width, video.height, 0, 0, video.width, video.height);
-  
+
   if (count > 50) {
     return createVector(
-      map(sumX / count * (1/captureScale), 0, width/M, -50*M, width/M + 50*M),
-      map(sumY / count * (1/captureScale), 0, height/M, -50*M, height/M + 50*M)
+      map((sumX / count) * (1 / captureScale), 0, width / M, -50 * M, width / M + 50 * M),
+      map((sumY / count) * (1 / captureScale), 0, height / M, -50 * M, height / M + 50 * M)
     );
   }
   return null;
 }
 
-
-
+// Pixel density helper from your code
 function getPixelDensity() {
-	let v = window.location.hash.split('');
-	v=v[v.length-1];
-	switch (v){
-		case '1':
-			return 1;
-			break;
-		case '2':
-			return 2;
-			break;
-		case '3':
-			return 3;
-			break;
-		case '4':
-			return 4;
-			break;
-		case '5':
-			return 5;
-			break;
-		
-		default:
-			return pixelDensity();
-			break;
-	}
+  let v = window.location.hash.split("");
+  v = v[v.length - 1];
+  switch (v) {
+    case "1": return 1;
+    case "2": return 2;
+    case "3": return 3;
+    case "4": return 4;
+    case "5": return 5;
+    default:  return pixelDensity();
+  }
 }
 
-function windowResized() {
-  // randomSeed(seed)
-  // noiseSeed(seed)
+// OPTIONAL: quick keyboard controls to test writes
+function keyPressed() {
+  // threshold up/down
+  if (key === "Q") { threshold = Math.min(255, threshold + 1); publish(); }
+  if (key === "A") { threshold = Math.max(0, threshold - 1); publish(); }
 
+  // captureScale up/down (0.01..1.00)
+  if (key === "W") { captureScale = Math.min(1.0, captureScale + 0.01); updateVideoSize(); publish(); }
+  if (key === "S") { captureScale = Math.max(0.01, captureScale - 0.01); updateVideoSize(); publish(); }
+
+  // strokeWeight up/down
+  if (key === "E") { strokeWeightVal = Math.min(200, strokeWeightVal + 1); publish(); }
+  if (key === "D") { strokeWeightVal = Math.max(1, strokeWeightVal - 1); publish(); }
+
+  // par1 0..10.00
+  if (key === "R") { par1 = Math.min(10.0, par1 + 0.01); publish(); }
+  if (key === "F") { par1 = Math.max(0.0,  par1 - 0.01); publish(); }
+
+  // orient 0..100
+  if (key === "T") { orient = Math.min(100, orient + 1); publish(); }
+  if (key === "G") { orient = Math.max(0, orient - 1); publish(); }
+
+  // pd 1..5 (integer)
+  if (key === "Y") { pd = Math.min(5, Math.round(pd + 1)); publish(); }
+  if (key === "H") { pd = Math.max(1, Math.round(pd - 1)); publish(); }
+}
+
+// Keep your minimal windowResized (we also publish above)
+function windowResized() {
   canvas =
     window.innerWidth / window.innerHeight < aspectRatio
       ? window.innerWidth / aspectRatio
